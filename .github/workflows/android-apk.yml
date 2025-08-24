@@ -31,38 +31,48 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # ⛑️ app.json MINIMAL (pas d'images) pour éviter les erreurs Jimp/CRC au prebuild
+      # app.json minimal (pas d'images) pour éviter Jimp/CRC en prebuild
       - name: Write minimal app.json (no images)
         run: |
           if [ -f app.json ]; then cp app.json app.json.bak || true; fi
           node -e "const fs=require('fs');const j={expo:{name:'Skilldrive',slug:'skilldrive',version:'1.0.0',android:{package:'com.skilldrive.app'}}};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
           cat app.json
 
-      # Génère android/ via Expo
       - name: Prebuild (Expo → create android/)
         run: npx expo prebuild -p android
 
-      # Force compile/target/min SDK après prebuild (compatibles Expo SDK 51 / RN 0.74)
-      - name: Force Android SDK versions (gradle.properties + app/build.gradle)
+      # Force les SDK (tous formats) + fallback app/build.gradle
+      - name: Force Android SDK versions
         run: |
           GP=android/gradle.properties
           touch "$GP"
+          # Formats AGP récents
+          sed -i '/^android.compileSdk=/d' "$GP" || true
+          sed -i '/^android.targetSdk=/d' "$GP" || true
+          sed -i '/^android.minSdk=/d' "$GP" || true
+          echo 'android.compileSdk=34' >> "$GP"
+          echo 'android.targetSdk=34' >> "$GP"
+          echo 'android.minSdk=23' >> "$GP"
+          # Formats "Version" (certains plugins les lisent encore)
+          sed -i '/^android.compileSdkVersion=/d' "$GP" || true
+          sed -i '/^android.targetSdkVersion=/d' "$GP" || true
+          sed -i '/^android.minSdkVersion=/d' "$GP" || true
+          echo 'android.compileSdkVersion=34' >> "$GP"
+          echo 'android.targetSdkVersion=34' >> "$GP"
+          echo 'android.minSdkVersion=23' >> "$GP"
+          # AndroidX/Jetifier
           grep -q '^android.useAndroidX=' "$GP" || echo 'android.useAndroidX=true' >> "$GP"
           grep -q '^android.enableJetifier=' "$GP" || echo 'android.enableJetifier=true' >> "$GP"
-          sed -i 's/^android\.compileSdkVersion=.*/android.compileSdkVersion=34/; t; $ a android.compileSdkVersion=34' "$GP"
-          sed -i 's/^android\.targetSdkVersion=.*/android.targetSdkVersion=34/; t; $ a android.targetSdkVersion=34' "$GP"
-          sed -i 's/^android\.minSdkVersion=.*/android.minSdkVersion=23/; t; $ a android.minSdkVersion=23' "$GP"
           echo "===== android/gradle.properties ====="
           cat "$GP"
 
+          # Fallback dans app/build.gradle (au cas où)
           AB=android/app/build.gradle
-          # compileSdkVersion
           if grep -q 'compileSdkVersion' "$AB"; then
             sed -i 's/compileSdkVersion[[:space:]]\+[0-9]\+/compileSdkVersion 34/' "$AB"
           else
             sed -i '0,/android[[:space:]]*{/{s//android {\n    compileSdkVersion 34/}' "$AB"
           fi
-          # min/targetSdkVersion dans defaultConfig
           if grep -q 'minSdkVersion' "$AB"; then
             sed -i 's/minSdkVersion[[:space:]]\+[0-9]\+/minSdkVersion 23/' "$AB"
           else
@@ -74,21 +84,26 @@ jobs:
             sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        targetSdkVersion 34/}' "$AB"
           fi
 
-          echo "===== android/app/build.gradle (extract) ====="
-          sed -n '1,200p' "$AB"
+      # Reset propre du plugin ExpoModulesCore (réinstalle le paquet pour restaurer le fichier d'origine)
+      - name: Reset expo-modules-core to clean state
+        run: |
+          npm i --no-audit --no-fund --force expo-modules-core@latest expo-location@latest
+          test -f node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle && head -n 40 node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle || echo "Plugin not found (will continue)"
 
-      # Patch EXPO: remplace l'accès direct à components.release et supprime les 'singleVariant("release")' dupliqués
-      - name: Patch ExpoModulesCorePlugin.gradle safely
+      # Patch MINIMAL et SÛR : remplace UNIQUEMENT 'from components.release' si présent
+      - name: Patch ExpoModulesCorePlugin.gradle (minimal)
         run: |
           FILE="node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle"
           if [ -f "$FILE" ]; then
-            echo "Patching $FILE"
-            # 1) Remplacer 'from components.release' par une source sûre (release || default || first)
-            perl -0777 -pe 's/from\s+components\.release/from (components.findByName("release") || components.findByName("default") || components.first())/g' -i "$FILE"
-            # 2) Éviter l'erreur "singleVariant ... multiple times" → supprimer les doublons éventuels
-            sed -i '/singleVariant\s*(\"release\")/d' "$FILE"
-            echo "===== Patched snippet (first 140 lines) ====="
-            sed -n '1,140p' "$FILE"
+            # Remplace la source de publication uniquement si la chaîne existe
+            if grep -q 'from[[:space:]]\+components\.release' "$FILE"; then
+              perl -0777 -pe 's/from\s+components\.release/from (components.findByName("release") || components.findByName("default") || components.first())/g' -i "$FILE"
+              echo "Patched 'from components.release' → source sûre"
+            else
+              echo "'components.release' non trouvé — aucun patch appliqué"
+            fi
+            # NE PAS toucher aux blocs 'publishing' → évite l'erreur 'singleVariant multiple times'
+            sed -n '1,120p' "$FILE"
           else
             echo "ExpoModulesCorePlugin.gradle introuvable — on continue."
           fi
