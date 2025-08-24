@@ -31,21 +31,20 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # --- (OPTION SÛRE) app.json minimal sans images pour éviter tout bug Jimp ---
+      # ⛑️ app.json MINIMAL (pas d'images) pour éviter les erreurs Jimp/CRC au prebuild
       - name: Write minimal app.json (no images)
         run: |
           if [ -f app.json ]; then cp app.json app.json.bak || true; fi
           node -e "const fs=require('fs');const j={expo:{name:'Skilldrive',slug:'skilldrive',version:'1.0.0',android:{package:'com.skilldrive.app'}}};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
           cat app.json
 
-      # --- Génère android/ ---
+      # Génère android/ via Expo
       - name: Prebuild (Expo → create android/)
         run: npx expo prebuild -p android
 
-      # --- Force les versions SDK (compile/target/min) après prebuild ---
+      # Force compile/target/min SDK après prebuild (compatibles Expo SDK 51 / RN 0.74)
       - name: Force Android SDK versions (gradle.properties + app/build.gradle)
         run: |
-          # gradle.properties (racine android/)
           GP=android/gradle.properties
           touch "$GP"
           grep -q '^android.useAndroidX=' "$GP" || echo 'android.useAndroidX=true' >> "$GP"
@@ -56,7 +55,6 @@ jobs:
           echo "===== android/gradle.properties ====="
           cat "$GP"
 
-          # app/build.gradle (module app)
           AB=android/app/build.gradle
           # compileSdkVersion
           if grep -q 'compileSdkVersion' "$AB"; then
@@ -79,17 +77,17 @@ jobs:
           echo "===== android/app/build.gradle (extract) ====="
           sed -n '1,200p' "$AB"
 
-      # --- Patch EXPO pour éviter l'erreur 'components.release' (idempotent) ---
-      - name: Patch ExpoModulesCorePlugin.gradle (idempotent)
+      # Patch EXPO: remplace l'accès direct à components.release et supprime les 'singleVariant("release")' dupliqués
+      - name: Patch ExpoModulesCorePlugin.gradle safely
         run: |
-          FILE=node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle
+          FILE="node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle"
           if [ -f "$FILE" ]; then
             echo "Patching $FILE"
-            # Remplacer 'from components.release' par une source sûre
-            node -e "const fs=require('fs'),p=process.env.F;let s=fs.readFileSync(p,'utf8');s=s.replace(/from\\s+components\\.release/g,'from (components.findByName(\"release\") || components.findByName(\"default\") || components.first())');fs.writeFileSync(p,s);" F="$FILE"
-            # Ajouter singleVariant('release') uniquement si ABSENT (évite le 'multiple times')
-            node -e "const fs=require('fs'),p=process.env.F;let s=fs.readFileSync(p,'utf8');if(!/singleVariant\\(\\s*\"release\"\\s*\\)/.test(s)){s=s.replace(/android\\s*\\{/, 'android {\\n    publishing {\\n      singleVariant(\"release\")\\n    }');fs.writeFileSync(p,s);}"; F="$FILE"
-            echo "===== Patched snippet ====="
+            # 1) Remplacer 'from components.release' par une source sûre (release || default || first)
+            perl -0777 -pe 's/from\s+components\.release/from (components.findByName("release") || components.findByName("default") || components.first())/g' -i "$FILE"
+            # 2) Éviter l'erreur "singleVariant ... multiple times" → supprimer les doublons éventuels
+            sed -i '/singleVariant\s*(\"release\")/d' "$FILE"
+            echo "===== Patched snippet (first 140 lines) ====="
             sed -n '1,140p' "$FILE"
           else
             echo "ExpoModulesCorePlugin.gradle introuvable — on continue."
