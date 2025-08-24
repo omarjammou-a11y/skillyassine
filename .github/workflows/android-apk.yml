@@ -7,8 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      CI: true           # <- remplace --non-interactive
-      EXPO_NO_DOCTOR: 1
+      CI: true   # rend Expo non interactif
 
     steps:
       - name: Checkout
@@ -31,14 +30,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 🔧 Assainir les images pour éviter l'erreur Jimp/CRC
-      - name: Ensure healthy assets
+      # 🔒 Éliminer toute image potentiellement corrompue dans le repo
+      - name: Remove all repo PNGs and recreate safe ones
         run: |
-          rm -rf assets
+          find . -type f -name "*.png" -print -delete || true
           mkdir -p assets
-          node -e "const fs=require('fs');const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==','base64');['icon.png','adaptive-icon.png','favicon.png','splash.png'].forEach(n=>fs.writeFileSync('assets/'+n,b));"
+          node -e "const fs=require('fs');const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==','base64');['icon.png','adaptive-icon.png','splash.png','favicon.png'].forEach(n=>fs.writeFileSync('assets/'+n,b));"
 
-      - name: Patch app.json image paths
+      - name: Patch app.json to use safe images
         run: |
           node -e "const fs=require('fs');const p='app.json';const j=JSON.parse(fs.readFileSync(p));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync(p,JSON.stringify(j,null,2));"
 
