@@ -7,9 +7,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      CI: true
+      CI: true        # rend Expo non interactif
       EXPO_NO_DOCTOR: 1
-      EXPO_IMAGE_UTILS_USE_SHARP: "1"   # ⬅️ force Sharp (évite Jimp)
 
     steps:
       - name: Checkout
@@ -30,27 +29,18 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
-        run: |
-          npm install
-          # ⬇️ Installe Sharp pour que Expo utilise Sharp au lieu de Jimp
-          npm i --no-audit --no-fund sharp@^0.33
+        run: npm install
 
-      # ⬇️ Remplace explicitement les images utilisées par Expo par des PNG sains
-      - name: Ensure safe Expo assets
+      # 1) Sauvegarder app.json et écrire une version MINIMALE SANS IMAGES
+      - name: Write minimal app.json (no images)
         run: |
-          mkdir -p assets
-          node -e "const fs=require('fs');const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==','base64');['icon.png','adaptive-icon.png','splash.png','favicon.png'].forEach(n=>fs.writeFileSync('assets/'+n,b));"
-          ls -l assets
-
-      - name: Patch app.json paths (icon/splash/adaptive)
-        run: |
-          node -e "const fs=require('fs');const p='app.json';const j=JSON.parse(fs.readFileSync(p));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync(p,JSON.stringify(j,null,2));"
+          if [ -f app.json ]; then cp app.json app.json.bak || true; fi
+          node -e "const fs=require('fs');const j={expo:{name:'Skilldrive',slug:'skilldrive',version:'1.0.0',android:{package:'com.skilldrive.app'}}};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
           cat app.json
 
-      - name: Prebuild (Expo → crée android/)
-        run: |
-          rm -rf android
-          npx expo prebuild -p android
+      # 2) Prebuild — aucune image à traiter => pas de Jimp
+      - name: Prebuild (Expo → create android/)
+        run: npx expo prebuild -p android
 
       - name: Make gradlew executable
         run: chmod +x android/gradlew
