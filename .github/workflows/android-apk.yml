@@ -25,14 +25,9 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm install
 
-      - name: Prebuild (Expo -> create android/)
+      - name: Prebuild (Expo → crée android/)
         run: npx expo prebuild -p android --non-interactive
 
       - name: Make gradlew executable
