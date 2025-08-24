@@ -68,20 +68,21 @@ jobs:
           sed -n '1,160p' "$AB"
 
       # 3) Patch de robustesse sur ExpoModulesCorePlugin (évite l'erreur components.release)
-      - name: Patch ExpoModulesCorePlugin.gradle (safe release component)
+            - name: Patch ExpoModulesCorePlugin.gradle (idempotent)
         run: |
           FILE=node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle
           if [ -f "$FILE" ]; then
             echo "Patching $FILE"
-            # Remplace "from components.release" par une vérification sûre
-            sed -i 's/from components\.release/from (components.findByName("release") ?: components.findByName("default") ?: components.first())/' "$FILE"
-            # Et si nécessaire, assure la déclaration singleVariant("release") dans les modules library
-            sed -i 's/android {$/android {\n    publishing {\n      singleVariant("release")\n    }/' "$FILE"
-            tail -n +1 "$FILE" | sed -n '1,140p'
+            # 1) Remplace la source de publication 'components.release' par une variante sûre
+            node -e "const fs=require('fs'),p=process.env.F;let s=fs.readFileSync(p,'utf8');s=s.replace(/from\\s+components\\.release/g,'from (components.findByName(\"release\") || components.findByName(\"default\") || components.first())');fs.writeFileSync(p,s);" F="$FILE"
+            # 2) N'ajoute JAMAIS singleVariant(\"release\") si déjà présent (évite le conflit)
+            node -e "const fs=require('fs'),p=process.env.F;let s=fs.readFileSync(p,'utf8');if(!/singleVariant\\(\\s*\"release\"\\s*\\)/.test(s)){s=s.replace(/android\\s*\\{/, 'android {\\n    publishing {\\n      singleVariant(\"release\")\\n    }');fs.writeFileSync(p,s);}"; F="$FILE"
+            # Affiche un extrait pour debug
+            sed -n '1,140p' "$FILE"
           else
-            echo "ExpoModulesCorePlugin.gradle non trouvé (version Expo différente) — on continue."
+            echo "ExpoModulesCorePlugin.gradle non trouvé — on continue."
           fi
-
+          
       - name: Gradle permissions
         run: chmod +x android/gradlew
 
