@@ -1,5 +1,4 @@
 name: Android APK
-
 on:
   workflow_dispatch:
 
@@ -11,218 +10,33 @@ jobs:
       EXPO_NO_DOCTOR: 1
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
 
       - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-      # app.json minimal => pas d'images pendant prebuild
       - name: Write minimal app.json (no images)
         run: |
           if [ -f app.json ]; then cp app.json app.json.bak || true; fi
           node -e "const fs=require('fs');const j={expo:{name:'Skilldrive',slug:'skilldrive',version:'1.0.0',android:{package:'com.skilldrive.app'}}};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
-          cat app.json
 
-      - name: Prebuild (Expo → create android/)
+      - name: Prebuild (Expo → android/)
         run: npx expo prebuild -p android
 
-      # 🛠️ Patch complet via Node (aucun sed/quote fragile)
-      - name: Patch Android project (SDK/AGP/Kotlin + repositories + modules Groovy & KTS + plugin Expo)
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-          const { execSync } = require('child_process');
-
-          const read = p => fs.existsSync(p) ? fs.readFileSync(p,'utf8') : '';
-          const write = (p,s) => { fs.mkdirSync(path.dirname(p), {recursive:true}); fs.writeFileSync(p,s); };
-
-          // 1) Gradle wrapper → 8.6
-          const wPath = 'android/gradle/wrapper/gradle-wrapper.properties';
-          let w = read(wPath);
-          if (w) {
-            w = w.replace(/distributionUrl=.*/g, 'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-all.zip');
-            write(wPath, w);
-          }
-
-          // 2) android/build.gradle → buildscript deps + repositories
-          const rbPath = 'android/build.gradle';
-          let rb = read(rbPath);
-          if (!rb.includes('buildscript')) {
-            rb =
-`buildscript {
-  repositories { google(); mavenCentral() }
-  dependencies {
-    classpath "com.android.tools.build:gradle:8.3.2"
-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"
-  }
-}
-
-` + rb;
-          } else {
-            rb = rb.replace(/com\.android\.tools\.build:gradle:[0-9.]+/g, 'com.android.tools.build:gradle:8.3.2');
-            rb = rb.replace(/org\.jetbrains\.kotlin:kotlin-gradle-plugin:[0-9.]+/g, 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22');
-            // ensure google + mavenCentral in buildscript.repositories
-            rb = rb.replace(/buildscript\s*{([\s\S]*?)repositories\s*{([\s\S]*?)}/, (m, a, repos) => {
-              let r = repos;
-              if (!/google\(\)/.test(r)) r = 'google()\n' + r;
-              if (!/mavenCentral\(\)/.test(r)) r = 'mavenCentral()\n' + r;
-              return `buildscript {${a}repositories {${r}}`;
-            });
-          }
-          write(rbPath, rb);
-
-          // 3) settings.gradle → ensure repositories for pluginManagement / dependencyResolutionManagement
-          const sg = 'android/settings.gradle';
-          let sgs = read(sg);
-          if (sgs) {
-            if (!/pluginManagement/.test(sgs)) {
-              sgs = 
-`pluginManagement {
-  repositories {
-    google()
-    mavenCentral()
-    gradlePluginPortal()
-  }
-}
-dependencyResolutionManagement {
-  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-  repositories {
-    google()
-    mavenCentral()
-  }
-}
-
-` + sgs;
-            } else {
-              sgs = sgs.replace(/pluginManagement\s*{[\s\S]*?repositories\s*{([\s\S]*?)}/, (m, repos) => {
-                let r = repos;
-                if (!/google\(\)/.test(r)) r = 'google()\n' + r;
-                if (!/mavenCentral\(\)/.test(r)) r = 'mavenCentral()\n' + r;
-                if (!/gradlePluginPortal\(\)/.test(r)) r = 'gradlePluginPortal()\n' + r;
-                return m.replace(repos, r);
-              });
-              // dependencyResolutionManagement block
-              if (!/dependencyResolutionManagement/.test(sgs)) {
-                sgs += `
-dependencyResolutionManagement {
-  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-  repositories {
-    google()
-    mavenCentral()
-  }
-}
-`;
-              } else {
-                sgs = sgs.replace(/dependencyResolutionManagement\s*{[\s\S]*?repositories\s*{([\s\S]*?)}/, (m, repos) => {
-                  let r = repos;
-                  if (!/google\(\)/.test(r)) r = 'google()\n' + r;
-                  if (!/mavenCentral\(\)/.test(r)) r = 'mavenCentral()\n' + r;
-                  return m.replace(repos, r);
-                });
-              }
-            }
-            write(sg, sgs);
-          }
-
-          // 4) gradle.properties (deux formats) + AndroidX/Jetifier + Kotlin in-process
-          const gpPath = 'android/gradle.properties';
-          let props = read(gpPath).split(/\r?\n/).filter(l => l.trim().length);
-          const setProp = (k,v) => {
-            const i = props.findIndex(l => l.startsWith(k+'='));
-            if (i>=0) props[i] = `${k}=${v}`; else props.push(`${k}=${v}`);
-          };
-          setProp('android.compileSdk','34');
-          setProp('android.targetSdk','34');
-          setProp('android.minSdk','23');
-          setProp('android.compileSdkVersion','34');
-          setProp('android.targetSdkVersion','34');
-          setProp('android.minSdkVersion','23');
-          setProp('android.useAndroidX','true');
-          setProp('android.enableJetifier','true');
-          setProp('kotlin.compiler.execution.strategy','in-process');
-          write(gpPath, props.join('\n')+'\n');
-
-          // 5) app/build.gradle (Groovy) → ensure compile/min/target
-          const abPath = 'android/app/build.gradle';
-          let ab = read(abPath);
-          if (ab) {
-            ab = /compileSdkVersion\s+\d+/.test(ab) ? ab.replace(/compileSdkVersion\s+\d+/, 'compileSdkVersion 34') : ab.replace(/android\s*{/, 'android {\n    compileSdkVersion 34');
-            ab = /minSdkVersion\s+\d+/.test(ab) ? ab.replace(/minSdkVersion\s+\d+/, 'minSdkVersion 23') : ab.replace(/defaultConfig\s*{/, 'defaultConfig {\n        minSdkVersion 23');
-            ab = /targetSdkVersion\s+\d+/.test(ab) ? ab.replace(/targetSdkVersion\s+\d+/, 'targetSdkVersion 34') : ab.replace(/defaultConfig\s*{/, 'defaultConfig {\n        targetSdkVersion 34');
-            write(abPath, ab);
-          }
-
-          // 6) Patch TOUS les modules :
-          //    - build.gradle (Groovy) : compile/min/target + remove publishing + secure components.release
-          //    - build.gradle.kts (Kotlin DSL) : compileSdk = 34 / minSdk = 23 / targetSdk = 34 + remove publishing + secure components.release
-          const gradleGroovy = execSync('find node_modules -type f -path "*/android/build.gradle"', {stdio:['ignore','pipe','ignore']})
-                               .toString().split('\n').filter(Boolean);
-          for (const f of gradleGroovy) {
-            try {
-              let s = read(f);
-              if (!s) continue;
-              s = /compileSdkVersion\s+\d+/.test(s) ? s.replace(/compileSdkVersion\s+\d+/, 'compileSdkVersion 34') : s.replace(/android\s*{/, 'android {\n    compileSdkVersion 34');
-              s = /minSdkVersion\s+\d+/.test(s) ? s.replace(/minSdkVersion\s+\d+/, 'minSdkVersion 23') : s.replace(/defaultConfig\s*{/, 'defaultConfig {\n        minSdkVersion 23');
-              s = /targetSdkVersion\s+\d+/.test(s) ? s.replace(/targetSdkVersion\s+\d+/, 'targetSdkVersion 34') : s.replace(/defaultConfig\s*{/, 'defaultConfig {\n        targetSdkVersion 34');
-              // remove publishing { ... }
-              s = s.replace(/publishing\s*\{[^{}]*((\{[^{}]*\}[^{}]*)*)\}/gs, '');
-              // secure components.release
-              s = s.replace(/from\s+components\.release/g, 'from (components.findByName("release") ?: components.findByName("default") ?: components.first())');
-              write(f, s);
-            } catch(e) {}
-          }
-
-          const gradleKts = execSync('find node_modules -type f -path "*/android/build.gradle.kts"', {stdio:['ignore','pipe','ignore']})
-                             .toString().split('\n').filter(Boolean);
-          for (const f of gradleKts) {
-            try {
-              let s = read(f);
-              if (!s) continue;
-              // Kotlin DSL style: android { compileSdk = 34 }  defaultConfig { minSdk = 23; targetSdk = 34 }
-              if (/compileSdk\s*=/.test(s)) s = s.replace(/compileSdk\s*=\s*\d+/, 'compileSdk = 34');
-              else s = s.replace(/android\s*{/, 'android {\n    compileSdk = 34');
-              if (/minSdk\s*=/.test(s)) s = s.replace(/minSdk\s*=\s*\d+/, 'minSdk = 23');
-              else s = s.replace(/defaultConfig\s*{/, 'defaultConfig {\n        minSdk = 23');
-              if (/targetSdk\s*=/.test(s)) s = s.replace(/targetSdk\s*=\s*\d+/, 'targetSdk = 34');
-              else s = s.replace(/defaultConfig\s*{/, 'defaultConfig {\n        targetSdk = 34');
-              // remove publishing { ... }
-              s = s.replace(/publishing\s*\{[^{}]*((\{[^{}]*\}[^{}]*)*)\}/gs, '');
-              // secure components.release → Kotlin DSL syntax
-              s = s.replace(/from\(\s*components\.release\s*\)/g, 'from(components.findByName("release") ?: components.findByName("default") ?: components.first())');
-              write(f, s);
-            } catch(e) {}
-          }
-
-          // 7) ExpoModulesCorePlugin.gradle (Groovy) : remove publishing / secure components.release
-          const pluginPath = 'node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle';
-          if (fs.existsSync(pluginPath)) {
-            let pg = read(pluginPath);
-            pg = pg.replace(/publishing\s*\{[^{}]*((\{[^{}]*\}[^{}]*)*)\}/gs, '');
-            pg = pg.replace(/from\s+components\.release/g, 'from (components.findByName("release") ?: components.findByName("default") ?: components.first())');
-            write(pluginPath, pg);
-          }
-          NODE
+      - name: Patch Android project (JS script)
+        run: node scripts/patch-android.js
 
       - name: Gradle permissions
         run: chmod +x android/gradlew
