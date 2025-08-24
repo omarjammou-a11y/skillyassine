@@ -29,121 +29,134 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      # 1) app.json minimal (pas d'images) pour éviter Jimp/CRC au prebuild
+      # app.json minimal (pas d'images) => pas de Jimp/CRC au prebuild
       - name: Write minimal app.json (no images)
         run: |
           if [ -f app.json ]; then cp app.json app.json.bak || true; fi
           node -e "const fs=require('fs');const j={expo:{name:'Skilldrive',slug:'skilldrive',version:'1.0.0',android:{package:'com.skilldrive.app'}}};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
           cat app.json
 
-      # 2) Génère le projet Android
       - name: Prebuild (Expo → create android/)
         run: npx expo prebuild -p android
 
-      # 3) Forcer les SDK au niveau projet + module app
-      - name: Force Android SDK (project + app)
+      # ⚙️ Toutes les modifications Gradle/AGP/Kotlin/SDK via un script Node (zéro quoting shell)
+      - name: Patch Android project (SDK/AGP/Kotlin + plugin Expo)
         run: |
-          GP=android/gradle.properties
-          touch "$GP"
-          # Nouveaux formats
-          sed -i '/^android.compileSdk=/d' "$GP" || true
-          sed -i '/^android.targetSdk=/d' "$GP" || true
-          sed -i '/^android.minSdk=/d' "$GP" || true
-          echo 'android.compileSdk=34' >> "$GP"
-          echo 'android.targetSdk=34' >> "$GP"
-          echo 'android.minSdk=23' >> "$GP"
-          # Formats hérités
-          sed -i '/^android.compileSdkVersion=/d' "$GP" || true
-          sed -i '/^android.targetSdkVersion=/d' "$GP" || true
-          sed -i '/^android.minSdkVersion=/d' "$GP' || true
-          echo 'android.compileSdkVersion=34' >> "$GP"
-          echo 'android.targetSdkVersion=34' >> "$GP"
-          echo 'android.minSdkVersion=23' >> "$GP"
-          # AndroidX/Jetifier
-          grep -q '^android.useAndroidX=' "$GP" || echo 'android.useAndroidX=true' >> "$GP"
-          grep -q '^android.enableJetifier=' "$GP" || echo 'android.enableJetifier=true' >> "$GP"
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
 
-          AB=android/app/build.gradle
-          # compileSdkVersion
-          if grep -q 'compileSdkVersion' "$AB"; then
-            sed -i 's/compileSdkVersion[[:space:]]\+[0-9]\+/compileSdkVersion 34/' "$AB"
-          else
-            sed -i '0,/android[[:space:]]*{/{s//android {\n    compileSdkVersion 34/}' "$AB"
-          fi
-          # min/targetSdkVersion
-          if grep -q 'minSdkVersion' "$AB"; then
-            sed -i 's/minSdkVersion[[:space:]]\+[0-9]\+/minSdkVersion 23/' "$AB"
-          else
-            sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        minSdkVersion 23/}' "$AB"
-          fi
-          if grep -q 'targetSdkVersion' "$AB"; then
-            sed -i 's/targetSdkVersion[[:space:]]\+[0-9]\+/targetSdkVersion 34/' "$AB"
-          else
-            sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        targetSdkVersion 34/}' "$AB"
-          fi
+          function read(p){ return fs.existsSync(p) ? fs.readFileSync(p,'utf8') : ''; }
+          function write(p, s){ fs.mkdirSync(path.dirname(p), {recursive:true}); fs.writeFileSync(p, s); }
 
-      # 4) Épingler outillage stable Expo SDK 51 / RN 0.74 (Gradle/AGP/Kotlin)
-      - name: Pin Gradle/AGP/Kotlin
-        run: |
-          WR=android/gradle/wrapper/gradle-wrapper.properties
-          sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-all.zip#' "$WR"
-          RB=android/build.gradle
-          if ! grep -q 'buildscript' "$RB"; then
-            sed -i '1s;^;buildscript { repositories { google(); mavenCentral() } dependencies { classpath "com.android.tools.build:gradle:8.3.2" classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22" } }\n\n;' "$RB"
-          else
-            sed -i 's/com\.android\.tools\.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.3.2/g' "$RB"
-            sed -i 's/org\.jetbrains\.kotlin:kotlin-gradle-plugin:[0-9.]\+/org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22/g' "$RB"
-            grep -q 'com.android.tools.build:gradle:8.3.2' "$RB" || sed -i 's/buildscript[[:space:]]*{[[:space:]]*repositories[[:space:]]*{[^}]*}[[:space:]]*dependencies[[:space:]]*{[^}]*/&\n        classpath "com.android.tools.build:gradle:8.3.2"\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"/' "$RB"
-          fi
+          // 1) gradle-wrapper.properties => Gradle 8.6 (stable Expo SDK 51)
+          const wPath = 'android/gradle/wrapper/gradle-wrapper.properties';
+          let w = read(wPath);
+          w = w.replace(/distributionUrl=.*/g, 'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-all.zip');
+          write(wPath, w);
 
-      # 5) Modules Expo: forcer SDK + neutraliser publishing + sécuriser components.release
-      - name: Patch all Expo modules (SDK + publishing + components.release)
-        run: |
-          # a) Forcer compile/min/target SDK sur tous les build.gradle des modules Android
-          while IFS= read -r -d '' F; do
-            # compileSdkVersion
-            if grep -q 'compileSdkVersion' "$F"; then
-              sed -i 's/compileSdkVersion[[:space:]]\+[0-9]\+/compileSdkVersion 34/' "$F"
-            else
-              sed -i '0,/android[[:space:]]*{/{s//android {\n    compileSdkVersion 34/}' "$F"
-            fi
-            # defaultConfig min/target
-            if grep -q 'minSdkVersion' "$F"; then
-              sed -i 's/minSdkVersion[[:space:]]\+[0-9]\+/minSdkVersion 23/' "$F"
-            else
-              sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        minSdkVersion 23/}' "$F"
-            fi
-            if grep -q 'targetSdkVersion' "$F"; then
-              sed -i 's/targetSdkVersion[[:space:]]\+[0-9]\+/targetSdkVersion 34/' "$F"
-            else
-              sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        targetSdkVersion 34/}' "$F"
-            fi
-          done < <(find node_modules -type f -path "*/android/build.gradle" -print0)
+          // 2) android/build.gradle => buildscript deps (AGP 8.3.2, Kotlin 1.9.22) + ensure repos
+          const rbPath = 'android/build.gradle';
+          let rb = read(rbPath);
+          if(!rb.includes('buildscript')) {
+            rb = `buildscript {
+  repositories { google(); mavenCentral() }
+  dependencies {
+    classpath "com.android.tools.build:gradle:8.3.2"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"
+  }
+}
 
-          # b) Supprimer tout bloc 'publishing { ... }' dans ExpoModulesCorePlugin.gradle (pas utile pour build APK)
-          FILE="node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle"
-          if [ -f "$FILE" ]; then
-            # supprime proprement publishing { ... } (bloc entier)
-            perl -0777 -pe 's/publishing\s*\{[^{}]*((\{[^{}]*\}[^{}]*)*)\}//gs' -i "$FILE"
-            # sécuriser toute occurrence de 'from components.release'
-            perl -0777 -pe 's/from\s+components\.release/from (components.findByName("release") || components.findByName("default") || components.first())/g' -i "$FILE"
-            head -n 140 "$FILE"
-          fi
+` + rb;
+          } else {
+            rb = rb.replace(/com\.android\.tools\.build:gradle:[0-9.]+/g, 'com.android.tools.build:gradle:8.3.2');
+            rb = rb.replace(/org\.jetbrains\.kotlin:kotlin-gradle-plugin:[0-9.]+/g, 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22');
+            if(!/repositories\s*{[^}]*google\(\)/s.test(rb) || !/repositories\s*{[^}]*mavenCentral\(\)/s.test(rb)){
+              rb = rb.replace(/buildscript\s*{[^}]*repositories\s*{[^}]*}/s, m=>{
+                let m2 = m;
+                if(!/google\(\)/.test(m2)) m2 = m2.replace(/repositories\s*{/, 'repositories { google() ');
+                if(!/mavenCentral\(\)/.test(m2)) m2 = m2.replace(/repositories\s*{/, 'repositories { mavenCentral() ');
+                return m2;
+              });
+            }
+            if(!/classpath\s+"com\.android\.tools\.build:gradle:8\.3\.2"/.test(rb)){
+              rb = rb.replace(/dependencies\s*{/, 'dependencies {\n    classpath "com.android.tools.build:gradle:8.3.2"');
+            }
+            if(!/classpath\s+"org\.jetbrains\.kotlin:kotlin-gradle-plugin:1\.9\.22"/.test(rb)){
+              rb = rb.replace(/dependencies\s*{/, 'dependencies {\n    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"');
+            }
+          }
+          write(rbPath, rb);
 
-      # 6) Nettoyage caches Gradle
-      - name: Gradle cache cleanup
-        run: |
-          rm -rf ~/.gradle/caches/*/gradle-8.8*
-          rm -rf ~/.gradle/caches/journal-*
-          rm -rf ~/.gradle/daemon/
-          echo "Caches purgés"
+          // 3) gradle.properties => SDK (deux formats) + AndroidX/Jetifier + Kotlin in-process
+          const gpPath = 'android/gradle.properties';
+          let props = read(gpPath).split(/\r?\n/).filter(Boolean);
+          function setProp(k,v){
+            const idx = props.findIndex(l=>l.startsWith(k+'='));
+            if(idx>=0) props[idx]=`${k}=${v}`; else props.push(`${k}=${v}`);
+          }
+          setProp('android.compileSdk','34');
+          setProp('android.targetSdk','34');
+          setProp('android.minSdk','23');
+          setProp('android.compileSdkVersion','34');
+          setProp('android.targetSdkVersion','34');
+          setProp('android.minSdkVersion','23');
+          setProp('android.useAndroidX','true');
+          setProp('android.enableJetifier','true');
+          setProp('kotlin.compiler.execution.strategy','in-process');
+          write(gpPath, props.join('\n')+'\n');
+
+          // 4) app/build.gradle => ensure compile/min/target in module
+          const abPath = 'android/app/build.gradle';
+          let ab = read(abPath);
+          if(!ab) process.exit(0);
+          if(/compileSdkVersion\s+\d+/.test(ab)) ab = ab.replace(/compileSdkVersion\s+\d+/, 'compileSdkVersion 34');
+          else ab = ab.replace(/android\s*{/, 'android {\n    compileSdkVersion 34');
+
+          if(/minSdkVersion\s+\d+/.test(ab)) ab = ab.replace(/minSdkVersion\s+\d+/, 'minSdkVersion 23');
+          else ab = ab.replace(/defaultConfig\s*{/, 'defaultConfig {\n        minSdkVersion 23');
+
+          if(/targetSdkVersion\s+\d+/.test(ab)) ab = ab.replace(/targetSdkVersion\s+\d+/, 'targetSdkVersion 34');
+          else ab = ab.replace(/defaultConfig\s*{/, 'defaultConfig {\n        targetSdkVersion 34');
+
+          write(abPath, ab);
+
+          // 5) Tous les modules Android des node_modules: force compile/min/target
+          const {execSync} = require('child_process');
+          const list = execSync('find node_modules -type f -path "*/android/build.gradle"', {stdio:['ignore','pipe','ignore']}).toString().split('\n').filter(Boolean);
+          for (const f of list){
+            try{
+              let s = read(f);
+              if(!s) continue;
+              s = /compileSdkVersion\s+\d+/.test(s) ? s.replace(/compileSdkVersion\s+\d+/, 'compileSdkVersion 34') : s.replace(/android\s*{/, 'android {\n    compileSdkVersion 34');
+              s = /minSdkVersion\s+\d+/.test(s) ? s.replace(/minSdkVersion\s+\d+/, 'minSdkVersion 23') : s.replace(/defaultConfig\s*{/, 'defaultConfig {\n        minSdkVersion 23');
+              s = /targetSdkVersion\s+\d+/.test(s) ? s.replace(/targetSdkVersion\s+\d+/, 'targetSdkVersion 34') : s.replace(/defaultConfig\s*{/, 'defaultConfig {\n        targetSdkVersion 34');
+              write(f, s);
+            }catch(e){}
+          }
+
+          // 6) ExpoModulesCorePlugin.gradle : retirer publishing blocs + sécuriser components.release SANS casser la syntaxe
+          const pluginPath = 'node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle';
+          if (fs.existsSync(pluginPath)){
+            let pg = read(pluginPath);
+            // supprimer tous les blocs 'publishing { ... }' (non nécessaires pour APK)
+            pg = pg.replace(/publishing\s*\{[^{}]*((\{[^{}]*\}[^{}]*)*)\}/gs, '');
+            // sécuriser components.release s'il existe
+            pg = pg.replace(/from\s+components\.release/g, 'from (components.findByName("release") ?: components.findByName("default") ?: components.first())');
+            write(pluginPath, pg);
+          }
+          NODE
 
       - name: Gradle permissions
         run: chmod +x android/gradlew
 
-      # 7) Build APK
       - name: Build Debug APK
         run: cd android && ./gradlew --no-daemon assembleDebug
 
