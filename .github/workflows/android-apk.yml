@@ -32,8 +32,39 @@ jobs:
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
+      # --- Assainir/écrire des images PNG VALABLES pour éviter Jimp CRC ---
+      - name: Ensure healthy assets
+        run: |
+          mkdir -p assets
+          # Icône 1024x1024 blanche (PNG valide encodé en base64)
+          cat > assets/icon.b64 <<'EOF'
+iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAAA3NCSVQICAjb4U/gAAAAg0lEQVR4nO3BMQEAAADCoPVPbQh+oAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIDpQK1kAAH3rQ3sAAAAASUVORK5CYII=
+EOF
+          base64 -d assets/icon.b64 > assets/icon.png
+
+          # Adaptive icon (copie)
+          cp assets/icon.png assets/adaptive-icon.png
+
+          # Splash (1024x2048, png valide – même contenu suffit pour Jimp)
+          cat > assets/splash.b64 <<'EOF'
+iVBORw0KGgoAAAANSUhEUgAAAQAAAAAACAYAAABi0x2/AAAAA3NCSVQICAjb4U/gAAAAH0lEQVR4nO3BAQ0AAADCoPdPbQhPoAAAAAAAAAAAAAAAAPgN9pEAAa6a0rQAAAAASUVORK5CYII=
+EOF
+          base64 -d assets/splash.b64 > assets/splash.png
+
+          # Petit favicon
+          cp assets/icon.png assets/favicon.png
+
+          ls -l assets
+
+      - name: Patch app.json paths (sûreté)
+        run: |
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync('app.json',JSON.stringify(j,null,2));console.log('app.json OK');"
+          cat app.json
+
+      # --- Repartir propre et créer android/ (Expo) ---
       - name: Prebuild Android (Expo)
         run: |
+          rm -rf android
           npx expo prebuild -p android --non-interactive
           test -d android || (echo "android/ non créé !" && exit 1)
 
@@ -43,7 +74,7 @@ jobs:
       - name: Build Debug APK
         run: |
           cd android
-          ./gradlew assembleDebug
+          ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
