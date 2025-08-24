@@ -17,31 +17,40 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
-      - name: Setup Java (Gradle)
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: 17
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install deps
-        run: if [ -f package-lock.json ]; then npm ci; else npm install; fi
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      # Écrit des PNG valides pour éviter l'erreur Jimp
       - name: Ensure healthy assets
-        run: node -e "const fs=require('fs');fs.mkdirSync('assets',{recursive:true});const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==';const b=Buffer.from(png,'base64');fs.writeFileSync('assets/icon.png',b);fs.copyFileSync('assets/icon.png','assets/adaptive-icon.png');fs.copyFileSync('assets/icon.png','assets/splash.png');fs.copyFileSync('assets/icon.png','assets/favicon.png');"
+        run: |
+          mkdir -p assets
+          node -e "const fs=require('fs');const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==','base64');fs.writeFileSync('assets/icon.png',b);fs.copyFileSync('assets/icon.png','assets/adaptive-icon.png');fs.copyFileSync('assets/icon.png','assets/splash.png');fs.copyFileSync('assets/icon.png','assets/favicon.png');"
 
-      - name: Patch app.json paths
-        run: node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+      - name: Patch app.json
+        run: |
+          node -e "const fs=require('fs');let j=JSON.parse(fs.readFileSync('app.json'));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
 
-      - name: Prebuild Android (Expo)
-        run: npx expo prebuild -p android --non-interactive
+      - name: Prebuild Android
+        run: |
+          rm -rf android
+          npx expo prebuild -p android --non-interactive
 
-      - name: Ensure gradlew is executable
+      - name: Gradlew permissions
         run: chmod +x android/gradlew
 
       - name: Build Debug APK
