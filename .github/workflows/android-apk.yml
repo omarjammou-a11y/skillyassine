@@ -31,18 +31,56 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 1) Prebuild: génère le dossier android/
+      # 1) Génère android/ sans images (on a déjà contourné l’erreur Jimp)
       - name: Prebuild (Expo → create android/)
         run: npx expo prebuild -p android
 
-      # 2) Patch Gradle: forcer les versions SDK si absentes
-      - name: Force Android SDK versions (app/build.gradle)
+      # 2) Force les versions SDK (compile/target/min) après prebuild
+      - name: Force Android SDK versions (gradle.properties + app/build.gradle)
         run: |
-          node -e "const fs=require('fs');const p='android/app/build.gradle';let s=fs.readFileSync(p,'utf8');if(!/compileSdkVersion\\s+\\d+/.test(s)){s=s.replace(/android\\s*\\{/, 'android {\\n    compileSdkVersion 34');}else{s=s.replace(/compileSdkVersion\\s+\\d+/, 'compileSdkVersion 34');}if(!/defaultConfig\\s*\\{[\\s\\S]*minSdkVersion/m.test(s)){s=s.replace(/defaultConfig\\s*\\{/, 'defaultConfig {\\n        minSdkVersion 23\\n        targetSdkVersion 34');}else{s=s.replace(/minSdkVersion\\s+\\d+/, 'minSdkVersion 23');s=s.replace(/targetSdkVersion\\s+\\d+/, 'targetSdkVersion 34');}fs.writeFileSync(p,s);"
+          # gradle.properties (racine android/)
+          GP=android/gradle.properties
+          touch "$GP"
+          grep -q '^android.useAndroidX=' "$GP" || echo 'android.useAndroidX=true' >> "$GP"
+          grep -q '^android.enableJetifier=' "$GP" || echo 'android.enableJetifier=true' >> "$GP"
+          sed -i 's/^android\.compileSdkVersion=.*/android.compileSdkVersion=34/; t; $ a android.compileSdkVersion=34' "$GP"
+          sed -i 's/^android\.targetSdkVersion=.*/android.targetSdkVersion=34/; t; $ a android.targetSdkVersion=34' "$GP"
+          sed -i 's/^android\.minSdkVersion=.*/android.minSdkVersion=23/; t; $ a android.minSdkVersion=23' "$GP"
+          cat "$GP"
 
-      - name: Ensure root build.gradle ext versions (fallback)
+          # app/build.gradle (module app)
+          AB=android/app/build.gradle
+          # compileSdkVersion
+          if grep -q 'compileSdkVersion' "$AB"; then
+            sed -i 's/compileSdkVersion[[:space:]]\+[0-9]\+/compileSdkVersion 34/' "$AB"
+          else
+            sed -i '0,/android[[:space:]]*{/{s//android {\n    compileSdkVersion 34/}' "$AB"
+          fi
+          # min/targetSdkVersion dans defaultConfig
+          sed -i 's/minSdkVersion[[:space:]]\+[0-9]\+/minSdkVersion 23/' "$AB"
+          if grep -q 'targetSdkVersion' "$AB"; then
+            sed -i 's/targetSdkVersion[[:space:]]\+[0-9]\+/targetSdkVersion 34/' "$AB"
+          else
+            sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        targetSdkVersion 34/}' "$AB"
+          fi
+
+          echo "===== android/app/build.gradle (extract) ====="
+          sed -n '1,160p' "$AB"
+
+      # 3) Patch de robustesse sur ExpoModulesCorePlugin (évite l'erreur components.release)
+      - name: Patch ExpoModulesCorePlugin.gradle (safe release component)
         run: |
-          node -e "const fs=require('fs');const p='android/build.gradle';let s=fs.readFileSync(p,'utf8');if(!/ext\\s*\\{[\\s\\S]*compileSdkVersion/m.test(s)){s=s.replace(/(buildscript[\\s\\S]*?}\\s*)$/, `$1\next {\\n  buildToolsVersion = \"34.0.0\"\\n  minSdkVersion = 23\\n  compileSdkVersion = 34\\n  targetSdkVersion = 34\\n  kotlinVersion = \"1.9.24\"\\n}\\n`);}fs.writeFileSync(p,s);"
+          FILE=node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle
+          if [ -f "$FILE" ]; then
+            echo "Patching $FILE"
+            # Remplace "from components.release" par une vérification sûre
+            sed -i 's/from components\.release/from (components.findByName("release") ?: components.findByName("default") ?: components.first())/' "$FILE"
+            # Et si nécessaire, assure la déclaration singleVariant("release") dans les modules library
+            sed -i 's/android {$/android {\n    publishing {\n      singleVariant("release")\n    }/' "$FILE"
+            tail -n +1 "$FILE" | sed -n '1,140p'
+          else
+            echo "ExpoModulesCorePlugin.gradle non trouvé (version Expo différente) — on continue."
+          fi
 
       - name: Gradle permissions
         run: chmod +x android/gradlew
