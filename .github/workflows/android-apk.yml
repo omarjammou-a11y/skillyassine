@@ -31,11 +31,18 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # 1) Génère android/ sans images (on a déjà contourné l’erreur Jimp)
+      # --- (OPTION SÛRE) app.json minimal sans images pour éviter tout bug Jimp ---
+      - name: Write minimal app.json (no images)
+        run: |
+          if [ -f app.json ]; then cp app.json app.json.bak || true; fi
+          node -e "const fs=require('fs');const j={expo:{name:'Skilldrive',slug:'skilldrive',version:'1.0.0',android:{package:'com.skilldrive.app'}}};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
+          cat app.json
+
+      # --- Génère android/ ---
       - name: Prebuild (Expo → create android/)
         run: npx expo prebuild -p android
 
-      # 2) Force les versions SDK (compile/target/min) après prebuild
+      # --- Force les versions SDK (compile/target/min) après prebuild ---
       - name: Force Android SDK versions (gradle.properties + app/build.gradle)
         run: |
           # gradle.properties (racine android/)
@@ -46,6 +53,7 @@ jobs:
           sed -i 's/^android\.compileSdkVersion=.*/android.compileSdkVersion=34/; t; $ a android.compileSdkVersion=34' "$GP"
           sed -i 's/^android\.targetSdkVersion=.*/android.targetSdkVersion=34/; t; $ a android.targetSdkVersion=34' "$GP"
           sed -i 's/^android\.minSdkVersion=.*/android.minSdkVersion=23/; t; $ a android.minSdkVersion=23' "$GP"
+          echo "===== android/gradle.properties ====="
           cat "$GP"
 
           # app/build.gradle (module app)
@@ -57,7 +65,11 @@ jobs:
             sed -i '0,/android[[:space:]]*{/{s//android {\n    compileSdkVersion 34/}' "$AB"
           fi
           # min/targetSdkVersion dans defaultConfig
-          sed -i 's/minSdkVersion[[:space:]]\+[0-9]\+/minSdkVersion 23/' "$AB"
+          if grep -q 'minSdkVersion' "$AB"; then
+            sed -i 's/minSdkVersion[[:space:]]\+[0-9]\+/minSdkVersion 23/' "$AB"
+          else
+            sed -i '0,/defaultConfig[[:space:]]*{/{s//defaultConfig {\n        minSdkVersion 23/}' "$AB"
+          fi
           if grep -q 'targetSdkVersion' "$AB"; then
             sed -i 's/targetSdkVersion[[:space:]]\+[0-9]\+/targetSdkVersion 34/' "$AB"
           else
@@ -65,24 +77,24 @@ jobs:
           fi
 
           echo "===== android/app/build.gradle (extract) ====="
-          sed -n '1,160p' "$AB"
+          sed -n '1,200p' "$AB"
 
-      # 3) Patch de robustesse sur ExpoModulesCorePlugin (évite l'erreur components.release)
-            - name: Patch ExpoModulesCorePlugin.gradle (idempotent)
+      # --- Patch EXPO pour éviter l'erreur 'components.release' (idempotent) ---
+      - name: Patch ExpoModulesCorePlugin.gradle (idempotent)
         run: |
           FILE=node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle
           if [ -f "$FILE" ]; then
             echo "Patching $FILE"
-            # 1) Remplace la source de publication 'components.release' par une variante sûre
+            # Remplacer 'from components.release' par une source sûre
             node -e "const fs=require('fs'),p=process.env.F;let s=fs.readFileSync(p,'utf8');s=s.replace(/from\\s+components\\.release/g,'from (components.findByName(\"release\") || components.findByName(\"default\") || components.first())');fs.writeFileSync(p,s);" F="$FILE"
-            # 2) N'ajoute JAMAIS singleVariant(\"release\") si déjà présent (évite le conflit)
+            # Ajouter singleVariant('release') uniquement si ABSENT (évite le 'multiple times')
             node -e "const fs=require('fs'),p=process.env.F;let s=fs.readFileSync(p,'utf8');if(!/singleVariant\\(\\s*\"release\"\\s*\\)/.test(s)){s=s.replace(/android\\s*\\{/, 'android {\\n    publishing {\\n      singleVariant(\"release\")\\n    }');fs.writeFileSync(p,s);}"; F="$FILE"
-            # Affiche un extrait pour debug
+            echo "===== Patched snippet ====="
             sed -n '1,140p' "$FILE"
           else
-            echo "ExpoModulesCorePlugin.gradle non trouvé — on continue."
+            echo "ExpoModulesCorePlugin.gradle introuvable — on continue."
           fi
-          
+
       - name: Gradle permissions
         run: chmod +x android/gradlew
 
