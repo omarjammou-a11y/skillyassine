@@ -4,12 +4,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
-    env:
-      CI: true
-      EXPO_NO_DOCTOR: 1
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,7 +24,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -36,21 +32,10 @@ jobs:
             npm install
           fi
 
-      - name: Ensure healthy assets
-        run: |
-          mkdir -p assets
-          node -e "const fs=require('fs');const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==','base64');fs.writeFileSync('assets/icon.png',b);fs.copyFileSync('assets/icon.png','assets/adaptive-icon.png');fs.copyFileSync('assets/icon.png','assets/splash.png');fs.copyFileSync('assets/icon.png','assets/favicon.png');"
+      - name: Prebuild (Expo -> create android/)
+        run: npx expo prebuild -p android --non-interactive
 
-      - name: Patch app.json
-        run: |
-          node -e "const fs=require('fs');let j=JSON.parse(fs.readFileSync('app.json'));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync('app.json',JSON.stringify(j,null,2));"
-
-      - name: Prebuild Android
-        run: |
-          rm -rf android
-          npx expo prebuild -p android --non-interactive
-
-      - name: Gradlew permissions
+      - name: Make gradlew executable
         run: chmod +x android/gradlew
 
       - name: Build Debug APK
