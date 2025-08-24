@@ -1,31 +1,57 @@
 name: Android APK
-on: { workflow_dispatch: {} }
+
+on:
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CI: true           # <- remplace --non-interactive
+      EXPO_NO_DOCTOR: 1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-      - name: Install
+
+      - name: Install dependencies
         run: npm install
-      - name: Prebuild
-        run: npx expo prebuild -p android --non-interactive
-      - name: Gradle perms
+
+      # 🔧 Assainir les images pour éviter l'erreur Jimp/CRC
+      - name: Ensure healthy assets
+        run: |
+          rm -rf assets
+          mkdir -p assets
+          node -e "const fs=require('fs');const b=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==','base64');['icon.png','adaptive-icon.png','favicon.png','splash.png'].forEach(n=>fs.writeFileSync('assets/'+n,b));"
+
+      - name: Patch app.json image paths
+        run: |
+          node -e "const fs=require('fs');const p='app.json';const j=JSON.parse(fs.readFileSync(p));j.expo=j.expo||{};j.expo.icon='./assets/icon.png';j.expo.splash={image:'./assets/splash.png',resizeMode:'contain',backgroundColor:'#ffffff'};j.expo.android=j.expo.android||{};j.expo.android.adaptiveIcon={foregroundImage:'./assets/adaptive-icon.png',backgroundColor:'#ffffff'};fs.writeFileSync(p,JSON.stringify(j,null,2));"
+
+      - name: Prebuild (Expo → crée android/)
+        run: npx expo prebuild -p android
+
+      - name: Make gradlew executable
         run: chmod +x android/gradlew
-      - name: Build APK
+
+      - name: Build Debug APK
         run: cd android && ./gradlew --no-daemon assembleDebug
-      - name: Upload
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: skilldrive-apk
